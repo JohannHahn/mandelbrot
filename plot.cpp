@@ -17,8 +17,6 @@ constexpr uint64_t max_iter = 50;
 
 // Rectangle compute_rec = {-2.f, 2.f, 4.f, 4.f};
 
-//Vector2 x_axis = {-2.f, 2.f};
-//Vector2 y_axis = {-2.f, 2.f};
 //
 int in_mandelbrot_set(Vector2 point) {
     double max_dist = 2.f;
@@ -57,11 +55,14 @@ struct Window {
     inline static Image graph_image;
     inline static Color palette[max_iter];
 
-    Rectangle menu_rec;
+    Rectangle menu_rec = {0};
     Vector2 screen_size;
 
     Texture graph_texture;
     Color bg_color;
+    
+    Image copy_img;
+    Texture copy_texture;
 
     Vector2 to_screen(Vector2 graph_point, Rectangle mandelbrot_rec) {
         return Vector2(graph_point.x / mandelbrot_rec.width * screen_size.x + screen_size.x / 2.f,
@@ -69,7 +70,7 @@ struct Window {
     }
 
     static void draw_mandelbrot_image(const Mandelbrot& mandelbrot, Rectangle draw_rec) {
-        Vector2 graph_top_left = mandelbrot.to_graph(Vector2(draw_rec.x, draw_rec.y), {draw_rec.width, draw_rec.height} );
+        Vector2 graph_top_left = mandelbrot.to_graph(Vector2(draw_rec.x, draw_rec.y), {graph_rec.width, graph_rec.height});
         Vector2 graph_point = graph_top_left;
         Vector2 unit = Vector2(1.f / graph_rec.width * mandelbrot.mandelbrot_rec.width, 1.f / graph_rec.height * mandelbrot.mandelbrot_rec.height); 
 
@@ -109,11 +110,11 @@ struct Window {
             ImageDrawLineEx(&graph_image, 
                             {graph_rec.x + graph_rec.width / 2.f + unit * i, graph_rec.y + graph_rec.height / 2.f + unit / 10.f}, 
                             {graph_rec.x + graph_rec.width / 2.f + unit * i, graph_rec.y + graph_rec.height / 2.f - unit / 10.f}, 
-                            thicc, RED);
+                            thicc, color);
             ImageDrawLineEx(&graph_image, 
                             {graph_rec.x + graph_rec.width / 2.f - unit * i, graph_rec.y + graph_rec.height / 2.f + unit / 10.f}, 
                             {graph_rec.x + graph_rec.width / 2.f - unit * i, graph_rec.y + graph_rec.height / 2.f - unit / 10.f}, 
-                            thicc, RED);
+                            thicc, color);
             i++;
         }
 
@@ -128,12 +129,25 @@ struct Window {
         ClearBackground(bg_color);
     }
 
-    void draw_frame(const Mandelbrot& mandelbrot) {
+    void render_to_img(const Mandelbrot& mandelbrot, uint64_t num_threads) {
+        ImageDrawRectangleRec(&graph_image, graph_rec, bg_color);
+        std::vector<std::thread> render_jobs;
+        float width = graph_rec.width / num_threads;
+        for (int i = 0; i < num_threads; ++i) {
+            Rectangle draw_rec = {i * width, 0.f, width, graph_rec.height};
+            render_jobs.emplace_back(draw_mandelbrot_image, mandelbrot, draw_rec);
+        }
+        for (auto& t: render_jobs) {
+            t.join();
+        }
 
         draw_axis(mandelbrot);
         UpdateTexture(graph_texture, graph_image.data);
-        DrawTexturePro(graph_texture, graph_rec, {0, 0, screen_size.x, screen_size.y}, {0.f, 0.f}, 0.f, WHITE);
+    }
 
+    void draw_frame(const Mandelbrot& mandelbrot, Color tint) {
+
+        DrawTexturePro(graph_texture, graph_rec, {0, 0, screen_size.x, screen_size.y}, {0.f, 0.f}, 0.f, tint);
 
         DrawFPS(screen_size.x - 50, screen_size.y - 50);
         EndDrawing();
@@ -158,13 +172,15 @@ struct App {
     uint64_t num_threads;
 
     void controls() {
-        if (IsKeyDown(KEY_UP)) {
-            mandelbrot.mandelbrot_rec.width--;
-            mandelbrot.mandelbrot_rec.height--;
+        if (IsKeyPressed(KEY_UP)) {
+            if (mandelbrot.mandelbrot_rec.width > 1.f)
+                mandelbrot.mandelbrot_rec.width--;
+            if (mandelbrot.mandelbrot_rec.height > 1.f)
+                mandelbrot.mandelbrot_rec.height--;
             new_input = true;
         }
 
-        if (IsKeyDown(KEY_DOWN)) {
+        if (IsKeyPressed(KEY_DOWN)) {
             mandelbrot.mandelbrot_rec.width++;
             mandelbrot.mandelbrot_rec.height++;
             new_input = true;
@@ -174,7 +190,10 @@ struct App {
             float text_size = 20;
             Vector2 mouse_pos = GetMousePosition();
             Vector2 graph_point = mandelbrot.to_graph(mouse_pos, window.screen_size);
-            DrawText(TextFormat("%f, %f", graph_point.x, graph_point.y), 0, 0, text_size, WHITE);
+            window.copy_img = ImageCopy(window.graph_image);
+            ImageDrawText(&window.copy_img, TextFormat("%f, %f", graph_point.x, graph_point.y), 0, 0, text_size, WHITE);
+            UpdateTexture(window.copy_texture, window.copy_img.data);
+            DrawTexture(window.copy_texture, 0, 0, WHITE);
         }
 
     }
@@ -182,29 +201,20 @@ struct App {
     void new_frame() {
         window.begin_frame();
 
-        controls();
 
+        // render new view to graph_image
         if (new_input) {
-            dispatch_render_threads();
+            //render_to_img();
+            window.render_to_img(mandelbrot, num_threads);
             new_input = false;
         }
 
-        window.draw_frame(mandelbrot);
+        controls();
+        // draw current view from graph_image on screen
+        Color tint = WHITE;
+        if (show_info) tint.a = 128;
+        window.draw_frame(mandelbrot, tint);
 
-
-    }
-
-    void dispatch_render_threads() {
-            ImageDrawRectangleRec(&window.graph_image, window.graph_rec, window.bg_color);
-            std::vector<std::thread> render_jobs;
-            float width = window.graph_rec.width / num_threads;
-            for (int i = 0; i < num_threads; ++i) {
-                Rectangle draw_rec = {i * width, 0.f, width, window.graph_rec.height};
-                render_jobs.emplace_back(window.draw_mandelbrot_image, mandelbrot, draw_rec);
-            }
-            for (auto& t: render_jobs) {
-                t.join();
-            }
     }
 
 };
@@ -222,6 +232,10 @@ Window init_window(int width, int height, const char* title) {
 
     window.graph_image = GenImageColor(window.graph_rec.width, window.graph_rec.height, window.bg_color);
     window.graph_texture = LoadTextureFromImage(window.graph_image);
+
+    window.copy_img = ImageCopy(window.graph_image);
+    window.copy_texture = LoadTextureFromImage(window.copy_img);
+
     return window;
 }
 
@@ -229,10 +243,13 @@ Window init_window(int width, int height, const char* title) {
 
 App init_app(int width, int height, const char* title) {
     App app;
+    app.num_threads = std::thread::hardware_concurrency();
+
     app.window = init_window(width, height, title);
 
-    app.num_threads = std::thread::hardware_concurrency();
-    TraceLog(LOG_INFO, "threads count = %d", app.num_threads);
+    Mandelbrot mandelbrot;
+    mandelbrot.mandelbrot_rec = {-2.f, 2.f, 4.f, 4.f};
+    app.mandelbrot = mandelbrot;
 
     return app;
 }
