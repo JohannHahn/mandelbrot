@@ -1,11 +1,17 @@
 #include <raylib.h>
+#include <raymath.h>
 #include <print>
 #include <vector>
 #include <thread>
 #include <assert.h>
 
 
-constexpr uint64_t max_iter = 200;
+struct Vector2D {
+    double x,y;
+};
+
+
+constexpr uint64_t max_iter = 2000;
 //Color palette[max_iter];
 //
 //Rectangle graph_rec = {0, 0, 1900, 1200};
@@ -19,6 +25,31 @@ constexpr uint64_t max_iter = 200;
 // Rectangle compute_rec = {-2.f, 2.f, 4.f, 4.f};
 
 //
+//
+
+Rectangle zoom_on_center(Rectangle rec, float zoom_factor = 1.1f) {
+    if (zoom_factor <= 0) return rec;
+
+    float new_width = rec.width * zoom_factor;  
+    rec.x += (rec.width - new_width) / 2.f;
+    rec.width = new_width;
+
+    float new_height = rec.height * zoom_factor;  
+    rec.y -= (rec.height - new_height) / 2.f;
+    rec.height = new_height;  
+
+    return rec;
+}
+
+Rectangle center_on_point(Vector2 point, Rectangle rec) {
+    
+    TraceLog(LOG_INFO, "point = %f, %f", point.x, point.y);
+    TraceLog(LOG_INFO, "before: x = %f, y = %f", rec.x, rec.y);
+    rec.x = point.x - rec.width / 2.f;
+    rec.y = point.y + rec.height / 2.f;
+    TraceLog(LOG_INFO, "after: x = %f, y = %f", rec.x, rec.y);
+    return rec;    
+}
 int in_mandelbrot_set(Vector2 point) {
     double max_dist = 2.f;
     if (point.x * point.x + point.y * point.y > max_dist * max_dist) return 1;
@@ -40,6 +71,28 @@ int in_mandelbrot_set(Vector2 point) {
     }
     return 0;
 }
+
+int in_mandelbrot_set(double x, double y) {
+    double max_dist = 2.f;
+    if (x * x + y * y > max_dist * max_dist) return 1;
+
+    int n = 0;
+    Vector2 z = {0};
+    double x_sqared = 0;
+    double y_sqared = 0;
+
+    for (; n < max_iter; ++n) {
+        x_sqared = z.x * z.x;
+        y_sqared = z.y * z.y;
+        double x_tmp = x_sqared - y_sqared + x; 
+        z.y = 2.f * z.x * z.y + y; 
+        z.x = x_tmp; 
+        if (x_sqared + y_sqared > max_dist * max_dist) {
+            return n;
+        }
+    }
+    return 0;
+}
 // screen_rec = graph_rec also ist screen point hier ok, aber falls es sich ändert muss man noch zusätzlich in onscreen_graph_space umrechnen
 Vector2 to_graph(Vector2 screen_point, Rectangle graph_rec, Rectangle mandelbrot_rec) {
     return Vector2(screen_point.x / graph_rec.width * mandelbrot_rec.width + mandelbrot_rec.x, 
@@ -52,7 +105,7 @@ Vector2 to_rec(Vector2 point, Rectangle from_rec, Rectangle to_rec) {
 }
 
 void draw_mandelbrot_image(Rectangle mandelbrot_rec, Rectangle draw_rec, Rectangle graph_rec, Image* graph_image, Color* palette) {
-    Vector2 graph_top_left = to_rec(Vector2(draw_rec.x, draw_rec.y), graph_rec, mandelbrot_rec);//to_graph(Vector2(draw_rec.x, draw_rec.y), graph_rec, mandelbrot_rec);
+    Vector2 graph_top_left = to_graph(Vector2(draw_rec.x, draw_rec.y), graph_rec, mandelbrot_rec);
     Vector2 graph_point = graph_top_left;
     Vector2 unit = Vector2(1.f / graph_rec.width * mandelbrot_rec.width, 1.f / graph_rec.height * mandelbrot_rec.height); 
 
@@ -107,6 +160,7 @@ struct Window {
 
     void draw_axis(Rectangle mandelbrot_rec, float thicc = 1.f, Color color = WHITE) {
         Vector2 zero = {std::abs(mandelbrot_rec.x), std::abs(mandelbrot_rec.y)};
+        // flipped??
         zero = to_rec(zero, mandelbrot_rec, graph_rec);
 
         TraceLog(LOG_INFO, "zero.x = %f, zero.y = %f", zero.x, zero.y); 
@@ -165,23 +219,19 @@ struct App {
     uint64_t num_threads;
 
     void controls() {
-        if (IsKeyPressed(KEY_UP)) {
-            if (mandelbrot.mandelbrot_rec.width > 1.f) {
-                mandelbrot.mandelbrot_rec.width--;
-                mandelbrot.mandelbrot_rec.x += 0.5f;
-            }
-            if (mandelbrot.mandelbrot_rec.height > 1.f) {
-                mandelbrot.mandelbrot_rec.height--;
-                mandelbrot.mandelbrot_rec.y -= 0.5f;
-            }
+        float zoom_factor = 0.1f;
+        if (IsKeyPressed(KEY_UP) || GetMouseWheelMove() > 0.f) {
+            mandelbrot.mandelbrot_rec = zoom_on_center(mandelbrot.mandelbrot_rec, 1.f - zoom_factor);
             new_input = true;
         }
 
-        if (IsKeyPressed(KEY_DOWN)) {
-            mandelbrot.mandelbrot_rec.width++;
-            mandelbrot.mandelbrot_rec.height++;
-            mandelbrot.mandelbrot_rec.y += 0.5f;
-            mandelbrot.mandelbrot_rec.x -= 0.5f;
+        if (IsKeyPressed(KEY_DOWN) || GetMouseWheelMove() < 0.f) {
+            mandelbrot.mandelbrot_rec = zoom_on_center(mandelbrot.mandelbrot_rec, 1.f + zoom_factor);
+            new_input = true;
+        }
+
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(GetMousePosition(), window.graph_rec)) {
+            mandelbrot.mandelbrot_rec = center_on_point(to_graph(GetMousePosition(), window.graph_rec, mandelbrot.mandelbrot_rec), mandelbrot.mandelbrot_rec);
             new_input = true;
         }
 
@@ -257,6 +307,7 @@ int main() {
 
     while(!WindowShouldClose()) {
         app.new_frame();
+
     }
 
     CloseWindow();
