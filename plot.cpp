@@ -2,9 +2,10 @@
 #include <print>
 #include <vector>
 #include <thread>
+#include <assert.h>
 
 
-constexpr uint64_t max_iter = 50;
+constexpr uint64_t max_iter = 500;
 //Color palette[max_iter];
 //
 //Rectangle graph_rec = {0, 0, 1900, 1200};
@@ -39,21 +40,40 @@ int in_mandelbrot_set(Vector2 point) {
     }
     return 0;
 }
+// screen_rec = graph_rec also ist screen point hier ok, aber falls es sich ändert muss man noch zusätzlich in onscreen_graph_space umrechnen
+Vector2 to_graph(Vector2 screen_point, Rectangle graph_rec, Rectangle mandelbrot_rec) {
+    return Vector2(screen_point.x / graph_rec.width * mandelbrot_rec.width + mandelbrot_rec.x, 
+                   -1.f * screen_point.y / graph_rec.height * mandelbrot_rec.height + mandelbrot_rec.y);
+}
+
+void draw_mandelbrot_image(Rectangle mandelbrot_rec, Rectangle draw_rec, Rectangle graph_rec, Image* graph_image, Color* palette) {
+    Vector2 graph_top_left = to_graph(Vector2(draw_rec.x, draw_rec.y), graph_rec, mandelbrot_rec);
+    Vector2 graph_point = graph_top_left;
+    Vector2 unit = Vector2(1.f / graph_rec.width * mandelbrot_rec.width, 1.f / graph_rec.height * mandelbrot_rec.height); 
+
+    for (int y = draw_rec.y; y < draw_rec.y + draw_rec.height; ++y) {
+        graph_point.x = graph_top_left.x;
+        for (int x = draw_rec.x; x < draw_rec.x + draw_rec.width; ++x) {
+            int n = in_mandelbrot_set(graph_point);
+            if (n > 0) {
+                ImageDrawPixel(graph_image, x, y, palette[n]);
+            }
+            graph_point.x += unit.x;
+        }
+        graph_point.y -= unit.y;
+    }
+}
 
 
 struct Mandelbrot {
-    Rectangle mandelbrot_rec;
+    Rectangle mandelbrot_rec = {-2.2f, 1.4f, 3.2f, 2.8f};
 
-    Vector2 to_graph(Vector2 screen_point, Vector2 screen_size) const {
-        return Vector2(screen_point.x / screen_size.x * mandelbrot_rec.width + mandelbrot_rec.x, 
-                       -1.f * screen_point.y / screen_size.y * mandelbrot_rec.height + mandelbrot_rec.y);
-    }
 };
 
 struct Window {
-    inline static Rectangle graph_rec;
-    inline static Image graph_image;
-    inline static Color palette[max_iter];
+    Rectangle graph_rec;
+    Image graph_image;
+    Color palette[max_iter];
 
     Rectangle menu_rec = {0};
     Vector2 screen_size;
@@ -67,24 +87,6 @@ struct Window {
     Vector2 to_screen(Vector2 graph_point, Rectangle mandelbrot_rec) {
         return Vector2(graph_point.x / mandelbrot_rec.width * screen_size.x + screen_size.x / 2.f,
                        -1.f * graph_point.y / mandelbrot_rec.height * screen_size.y + screen_size.y / 2.f);
-    }
-
-    static void draw_mandelbrot_image(const Mandelbrot& mandelbrot, Rectangle draw_rec) {
-        Vector2 graph_top_left = mandelbrot.to_graph(Vector2(draw_rec.x, draw_rec.y), {graph_rec.width, graph_rec.height});
-        Vector2 graph_point = graph_top_left;
-        Vector2 unit = Vector2(1.f / graph_rec.width * mandelbrot.mandelbrot_rec.width, 1.f / graph_rec.height * mandelbrot.mandelbrot_rec.height); 
-
-        for (int y = draw_rec.y; y < draw_rec.y + draw_rec.height; ++y) {
-            graph_point.x = graph_top_left.x;
-            for (int x = draw_rec.x; x < draw_rec.x + draw_rec.width; ++x) {
-                int n = in_mandelbrot_set(graph_point);
-                if (n > 0) {
-                    ImageDrawPixel(&graph_image, x, y, palette[n]);
-                }
-                graph_point.x += unit.x;
-            }
-            graph_point.y -= unit.y;
-        }
     }
 
     void fill_palette() {
@@ -135,7 +137,7 @@ struct Window {
         float width = graph_rec.width / num_threads;
         for (int i = 0; i < num_threads; ++i) {
             Rectangle draw_rec = {i * width, 0.f, width, graph_rec.height};
-            render_jobs.emplace_back(draw_mandelbrot_image, mandelbrot, draw_rec);
+            render_jobs.emplace_back(draw_mandelbrot_image, mandelbrot.mandelbrot_rec, draw_rec, graph_rec, &graph_image, palette);
         }
         for (auto& t: render_jobs) {
             t.join();
@@ -173,25 +175,34 @@ struct App {
 
     void controls() {
         if (IsKeyPressed(KEY_UP)) {
-            if (mandelbrot.mandelbrot_rec.width > 1.f)
+            if (mandelbrot.mandelbrot_rec.width > 1.f) {
                 mandelbrot.mandelbrot_rec.width--;
-            if (mandelbrot.mandelbrot_rec.height > 1.f)
+                mandelbrot.mandelbrot_rec.x += 0.5f;
+            }
+            if (mandelbrot.mandelbrot_rec.height > 1.f) {
                 mandelbrot.mandelbrot_rec.height--;
+                mandelbrot.mandelbrot_rec.y -= 0.5f;
+            }
             new_input = true;
         }
 
         if (IsKeyPressed(KEY_DOWN)) {
             mandelbrot.mandelbrot_rec.width++;
             mandelbrot.mandelbrot_rec.height++;
+            mandelbrot.mandelbrot_rec.y += 0.5f;
+            mandelbrot.mandelbrot_rec.x -= 0.5f;
             new_input = true;
         }
 
         if (show_info) {
             float text_size = 20;
             Vector2 mouse_pos = GetMousePosition();
-            Vector2 graph_point = mandelbrot.to_graph(mouse_pos, window.screen_size);
+            Vector2 graph_point = to_graph(mouse_pos, window.graph_rec, mandelbrot.mandelbrot_rec);
+
             window.copy_img = ImageCopy(window.graph_image);
+
             ImageDrawText(&window.copy_img, TextFormat("%f, %f", graph_point.x, graph_point.y), 0, 0, text_size, WHITE);
+
             UpdateTexture(window.copy_texture, window.copy_img.data);
             DrawTexture(window.copy_texture, 0, 0, WHITE);
         }
@@ -247,13 +258,8 @@ App init_app(int width, int height, const char* title) {
 
     app.window = init_window(width, height, title);
 
-    Mandelbrot mandelbrot;
-    mandelbrot.mandelbrot_rec = {-2.f, 2.f, 4.f, 4.f};
-    app.mandelbrot = mandelbrot;
-
     return app;
 }
-
 
 int main() {
     App app = init_app(900, 600, "Mandelbrot");
