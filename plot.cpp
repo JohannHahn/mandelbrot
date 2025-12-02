@@ -5,7 +5,7 @@
 #include <assert.h>
 
 
-constexpr uint64_t max_iter = 500;
+constexpr uint64_t max_iter = 200;
 //Color palette[max_iter];
 //
 //Rectangle graph_rec = {0, 0, 1900, 1200};
@@ -46,8 +46,13 @@ Vector2 to_graph(Vector2 screen_point, Rectangle graph_rec, Rectangle mandelbrot
                    -1.f * screen_point.y / graph_rec.height * mandelbrot_rec.height + mandelbrot_rec.y);
 }
 
+Vector2 to_rec(Vector2 point, Rectangle from_rec, Rectangle to_rec) {
+    return Vector2(point.x / from_rec.width * to_rec.width + to_rec.x,
+                   point.y / from_rec.height * to_rec.height + to_rec.y);
+}
+
 void draw_mandelbrot_image(Rectangle mandelbrot_rec, Rectangle draw_rec, Rectangle graph_rec, Image* graph_image, Color* palette) {
-    Vector2 graph_top_left = to_graph(Vector2(draw_rec.x, draw_rec.y), graph_rec, mandelbrot_rec);
+    Vector2 graph_top_left = to_rec(Vector2(draw_rec.x, draw_rec.y), graph_rec, mandelbrot_rec);//to_graph(Vector2(draw_rec.x, draw_rec.y), graph_rec, mandelbrot_rec);
     Vector2 graph_point = graph_top_left;
     Vector2 unit = Vector2(1.f / graph_rec.width * mandelbrot_rec.width, 1.f / graph_rec.height * mandelbrot_rec.height); 
 
@@ -66,8 +71,7 @@ void draw_mandelbrot_image(Rectangle mandelbrot_rec, Rectangle draw_rec, Rectang
 
 
 struct Mandelbrot {
-    Rectangle mandelbrot_rec = {-2.2f, 1.4f, 3.2f, 2.8f};
-
+    Rectangle mandelbrot_rec = {-2.2f, 1.f, 3.2f, 2.f};
 };
 
 struct Window {
@@ -101,29 +105,26 @@ struct Window {
         }   
     }
 
-    void draw_axis(const Mandelbrot& mandelbrot, float thicc = 1.f, Color color = WHITE) {
-        Vector2 start_x = {0.f, graph_rec.height / 2.f};
-        Vector2 end_x = {graph_rec.width, graph_rec.height / 2.f};
-        float unit = graph_rec.width / mandelbrot.mandelbrot_rec.width;
-        int i = 0;
+    void draw_axis(Rectangle mandelbrot_rec, float thicc = 1.f, Color color = WHITE) {
+        Vector2 zero = {std::abs(mandelbrot_rec.x), std::abs(mandelbrot_rec.y)};
+        zero = to_rec(zero, mandelbrot_rec, graph_rec);
+
+        TraceLog(LOG_INFO, "zero.x = %f, zero.y = %f", zero.x, zero.y); 
+
+        //Vector2 start_x = {0.f, graph_rec.height / 2.f};
+        Vector2 start_x = {0.f, zero.y};
+        //Vector2 end_x = {graph_rec.width, graph_rec.height / 2.f};
+        Vector2 end_x = {graph_rec.width, zero.y};
+
         //DrawLineEx(start_x, end_x, thicc, color); 
         ImageDrawLineEx(&graph_image, start_x, end_x, thicc, color); 
-        while (unit * i <= graph_rec.width) {
-            ImageDrawLineEx(&graph_image, 
-                            {graph_rec.x + graph_rec.width / 2.f + unit * i, graph_rec.y + graph_rec.height / 2.f + unit / 10.f}, 
-                            {graph_rec.x + graph_rec.width / 2.f + unit * i, graph_rec.y + graph_rec.height / 2.f - unit / 10.f}, 
-                            thicc, color);
-            ImageDrawLineEx(&graph_image, 
-                            {graph_rec.x + graph_rec.width / 2.f - unit * i, graph_rec.y + graph_rec.height / 2.f + unit / 10.f}, 
-                            {graph_rec.x + graph_rec.width / 2.f - unit * i, graph_rec.y + graph_rec.height / 2.f - unit / 10.f}, 
-                            thicc, color);
-            i++;
-        }
-
-        Vector2 start_y = {graph_rec.width / 2.f, graph_rec.height};
-        Vector2 end_y = {graph_rec.width / 2.f, 0.f};
+        
+        //Vector2 start_y = {graph_rec.width / 2.f, graph_rec.height};
+        //Vector2 end_y = {graph_rec.width / 2.f, 0.f};
+        Vector2 start_y = {zero.x, graph_rec.height};
+        Vector2 end_y = {zero.x, 0.f};
         //DrawLineEx(start_y, end_y, thicc, color); 
-        //ImageDrawLineEx(&graph_image, start_y, end_y, thicc, color); 
+        ImageDrawLineEx(&graph_image, start_y, end_y, thicc, color); 
     }
 
     void begin_frame() {
@@ -131,38 +132,28 @@ struct Window {
         ClearBackground(bg_color);
     }
 
-    void render_to_img(const Mandelbrot& mandelbrot, uint64_t num_threads) {
+    void render_to_img(Rectangle mandelbrot_rec, uint64_t num_threads) {
         ImageDrawRectangleRec(&graph_image, graph_rec, bg_color);
         std::vector<std::thread> render_jobs;
         float width = graph_rec.width / num_threads;
         for (int i = 0; i < num_threads; ++i) {
             Rectangle draw_rec = {i * width, 0.f, width, graph_rec.height};
-            render_jobs.emplace_back(draw_mandelbrot_image, mandelbrot.mandelbrot_rec, draw_rec, graph_rec, &graph_image, palette);
+            render_jobs.emplace_back(draw_mandelbrot_image, mandelbrot_rec, draw_rec, graph_rec, &graph_image, palette);
         }
         for (auto& t: render_jobs) {
             t.join();
         }
 
-        draw_axis(mandelbrot);
+        draw_axis(mandelbrot_rec);
         UpdateTexture(graph_texture, graph_image.data);
     }
 
-    void draw_frame(const Mandelbrot& mandelbrot, Color tint) {
+    void draw_frame(Color tint) {
 
         DrawTexturePro(graph_texture, graph_rec, {0, 0, screen_size.x, screen_size.y}, {0.f, 0.f}, 0.f, tint);
 
         DrawFPS(screen_size.x - 50, screen_size.y - 50);
         EndDrawing();
-    }
-
-    //Vector2 to_graph(Vector2 screen_point) {
-    //    return Vector2(screen_point.x / screen_rec.width * compute_rec.width + compute_rec.x, 
-    //                   -1.f * screen_point.y / screen_rec.height * compute_rec.height + compute_rec.y);
-    //}
-
-    Vector2 to_screen(const Mandelbrot& mandelbrot, Vector2 graph_point) {
-        return Vector2(graph_point.x / mandelbrot.mandelbrot_rec.width * screen_size.x + screen_size.x / 2.f,
-                       -1.f * graph_point.y / mandelbrot.mandelbrot_rec.height * screen_size.y + screen_size.y / 2.f);
     }
 };
 
@@ -216,7 +207,7 @@ struct App {
         // render new view to graph_image
         if (new_input) {
             //render_to_img();
-            window.render_to_img(mandelbrot, num_threads);
+            window.render_to_img(mandelbrot.mandelbrot_rec, num_threads);
             new_input = false;
         }
 
@@ -224,7 +215,7 @@ struct App {
         // draw current view from graph_image on screen
         Color tint = WHITE;
         if (show_info) tint.a = 128;
-        window.draw_frame(mandelbrot, tint);
+        window.draw_frame(tint);
 
     }
 
