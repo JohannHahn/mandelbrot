@@ -12,8 +12,8 @@
 
 constexpr uint64_t max_iter_initial = 100;
 constexpr uint64_t float_precision = 128;
-constexpr uint64_t window_width = 600;
-constexpr uint64_t window_height = 400;
+constexpr uint64_t window_width = 1000;
+constexpr uint64_t window_height = 800;
 constexpr uint64_t max_threads = 64;
 
 std::condition_variable cv;
@@ -22,6 +22,9 @@ std::mutex mtx;
 bool threads_running = true;
 
 struct Window;
+struct App;
+
+void render_worker(std::stop_token st, App& app);
 
 enum ComputeMode {
     DOUBLE,
@@ -297,9 +300,11 @@ struct Window {
     Image copy_img;
     Texture copy_texture;
 
-    std::vector<std::thread> render_jobs;
-    std::vector<uint64_t> threads_ready;
-    std::vector<RectangleD> draw_recs_d;
+    //std::vector<std::thread> render_jobs;
+    //std::vector<uint64_t> threads_ready;
+    std::vector<RectangleD> draw_recs;
+    std::jthread render_thread;
+    bool thread_ready = true;
 
     void fill_palette(uint64_t max_iter) {
         Color start = RED;
@@ -340,28 +345,27 @@ struct Window {
         BeginDrawing();
         ClearBackground(bg_color);
     }
-//
-//    void render_to_img(const RectangleD& mandelbrot_rec, uint64_t num_threads, uint64_t max_iter) {
-//        std::vector<std::thread> render_jobs;
-//
-//        ImageDrawRectangleRec(&graph_image, graph_rec, bg_color);
-//
-//        float width = graph_rec.width / num_threads;
-//        for (int i = 0; i < num_threads; ++i) {
-//            RectangleD draw_rec = {i * width, 0.f, width, graph_rec.height};
-//            RectangleD graph_rec_d = {graph_rec.x, graph_rec.y, graph_rec.width, graph_rec.height};
-//            render_jobs.emplace_back(draw_mandelbrot_image_d, 
-//                                     mandelbrot_rec, draw_rec, graph_rec_d, &graph_image, &palette[0], max_iter);
-//        }
-//
-//        for (auto& t: render_jobs) {
-//            t.join();
-//        }
-//
-//        draw_axis(mandelbrot_rec);
-//
-//        UpdateTexture(graph_texture, graph_image.data);
-//    }
+
+    //void render_to_img(const RectangleD& mandelbrot_rec, uint64_t num_threads, uint64_t max_iter) {
+    //    std::vector<std::thread> render_jobs;
+
+
+    //    float width = graph_rec.width / num_threads;
+    //    for (int i = 0; i < num_threads; ++i) {
+    //        RectangleD draw_rec = {i * width, 0.f, width, graph_rec.height};
+    //        RectangleD graph_rec_d = {graph_rec.x, graph_rec.y, graph_rec.width, graph_rec.height};
+    //        render_jobs.emplace_back(draw_mandelbrot_image_d, 
+    //                                 mandelbrot_rec, draw_rec, graph_rec_d, &graph_image, &palette[0], max_iter);
+    //    }
+
+    //    for (auto& t: render_jobs) {
+    //        t.join();
+    //    }
+
+    //    draw_axis(mandelbrot_rec);
+
+    //    UpdateTexture(graph_texture, graph_image.data);
+    //}
 //
 //
 //    void render_to_img(const RectangleAP& mandelbrot_rec, uint64_t num_threads, uint64_t max_iter) {
@@ -396,98 +400,130 @@ struct Window {
     }
 };
 
-    // !! Immder die selben draw_recs -> vorberechnen ?
-void draw_mandelbrot_image_d(const RectangleD& mandelbrot_rec, Window& window, uint64_t max_iter, int thread_id) {
-    if (thread_id > window.threads_ready.size()) {
-        TraceLog(LOG_ERROR, "thread id = %d, thread_ready size = %d", thread_id, window.threads_ready.size());
-        exit(0);
-    }
+void draw_mandelbrot_image(const RectangleD& mandelbrot_rec, Window& window, uint64_t max_iter, uint64_t thread_id) {
 
-    std::unique_lock<std::mutex> lock(mtx);
+    std::println("render_thread {} start", thread_id);
 
+    RectangleD& draw_rec = window.draw_recs[thread_id];
+    Vector2D graph_top_left = {draw_rec.x, draw_rec.y};
+    RectangleD graph_rec_d = {window.graph_rec.x, window.graph_rec.y, window.graph_rec.width, window.graph_rec.height};
+    to_graph(graph_top_left, graph_rec_d, mandelbrot_rec);
 
-    std::println("thread {} starting first loop", thread_id);
+    Vector2D graph_point = graph_top_left;
 
-    while (threads_running) {
-
-        cv.wait(lock, [&window,thread_id] {
-            return window.threads_ready[thread_id];
-        });
-
-        std::println("thread {} awoken", thread_id);
-
-        RectangleD& draw_rec = window.draw_recs_d[thread_id];
-        Vector2D graph_top_left = {draw_rec.x, draw_rec.y};
-        RectangleD graph_rec_d = {window.graph_rec.x, window.graph_rec.y, window.graph_rec.width, window.graph_rec.height};
-        to_graph(graph_top_left, graph_rec_d, mandelbrot_rec);
-
-        Vector2D graph_point = graph_top_left;
-
-        Vector2D unit;
-        unit.x = mandelbrot_rec.width / graph_rec_d.width; 
-        unit.y = mandelbrot_rec.height / graph_rec_d.height; 
+    Vector2D unit;
+    unit.x = mandelbrot_rec.width / graph_rec_d.width; 
+    unit.y = mandelbrot_rec.height / graph_rec_d.height; 
 
 
-        for (int y = draw_rec.y; y < draw_rec.y + draw_rec.height; ++y) {
-            graph_point.x = graph_top_left.x;
-            for (int x = draw_rec.x; x < draw_rec.x + draw_rec.width; ++x) {
-                int n = in_mandelbrot_set(graph_point, max_iter);
-                if (n > 0) {
-                    ImageDrawPixel(&window.graph_image, x, y, window.palette.at(n));
-                }
-                graph_point.x += unit.x;
+    for (int y = draw_rec.y; y < draw_rec.y + draw_rec.height; ++y) {
+        graph_point.x = graph_top_left.x;
+        for (int x = draw_rec.x; x < draw_rec.x + draw_rec.width; ++x) {
+            int n = in_mandelbrot_set(graph_point, max_iter);
+            if (n > 0) {
+                ImageDrawPixel(&window.graph_image, x, y, window.palette.at(n));
             }
-            graph_point.y -= unit.y;
+            graph_point.x += unit.x;
         }
-        graph_point = graph_top_left;
-        window.threads_ready[thread_id] = false;
-        std::println("thread {} ending loop", thread_id);
+        graph_point.y -= unit.y;
     }
+    graph_point = graph_top_left;
+
+    std::println("render_thread {} end", thread_id);
 }
 
-void draw_mandelbrot_image_mpfr(MandelbrotVectors& mandelbrot_vectors, DrawVectors& draw_vectors, const RectangleAP& mandelbrot_rec, Window& window, uint64_t max_iter, uint64_t thread_id) {
+
     // !! Immder die selben draw_recs -> vorberechnen ?
-    std::unique_lock<std::mutex> lock(mtx);
-    while(threads_running) {
-        cv.wait(lock, [&window,thread_id] {
-            return window.threads_ready[thread_id];
-        });
-
-        std::println("thread {} awoken", thread_id);
-
-        RectangleD& draw_rec = window.draw_recs_d[thread_id];
-        Rectangle& graph_rec = window.graph_rec;
-        Vector2AP& graph_top_left = draw_vectors.top_left;
-        mpfr_set_d(graph_top_left.x, draw_rec.x, MPFR_RNDN);
-        mpfr_set_d(graph_top_left.y, draw_rec.y, MPFR_RNDN);
-        to_graph(graph_top_left, (RectangleD){graph_rec.x, graph_rec.y, graph_rec.width, graph_rec.height}, mandelbrot_rec);
-
-        Vector2AP& graph_point = draw_vectors.graph_point;
-        mpfr_set(graph_point.x, graph_top_left.x, MPFR_RNDN);
-        mpfr_set(graph_point.y, graph_top_left.y, MPFR_RNDN);
-
-        Vector2AP& unit = draw_vectors.unit;
-        //unit.x = 1.f / graph_rec.width * mandelbrot_rec.width; 
-        //unit.y = 1.f / graph_rec.height * mandelbrot_rec.height; 
-        mpfr_div_d(unit.x, mandelbrot_rec.width, graph_rec.width, MPFR_RNDN);
-        mpfr_div_d(unit.y, mandelbrot_rec.height, graph_rec.height, MPFR_RNDN);
-
-
-        for (int y = draw_rec.y; y < draw_rec.y + draw_rec.height; ++y) {
-            mpfr_set(graph_point.x, graph_top_left.x, MPFR_RNDN);
-            for (int x = draw_rec.x; x < draw_rec.x + draw_rec.width; ++x) {
-                int n = in_mandelbrot_set(graph_point, mandelbrot_vectors, max_iter);
-                if (n > 0) {
-                    ImageDrawPixel(&window.graph_image, x, y, window.palette.at(n));
-                }
-                mpfr_add(graph_point.x, graph_point.x, unit.x, MPFR_RNDN);
-            }
-            mpfr_sub(graph_point.y, graph_point.y, unit.y, MPFR_RNDN);
-        }
-        window.threads_ready[thread_id] = false;
-        std::println("thread {} ending loop", thread_id);
-    }
-}
+//void draw_mandelbrot_image_d(const RectangleD& mandelbrot_rec, Window& window, uint64_t max_iter, int thread_id) {
+//
+//    std::unique_lock<std::mutex> lock(mtx);
+//
+//
+//    std::println("thread {} starting first loop", thread_id);
+//
+//    while (threads_running) {
+//
+//        cv.wait(lock, [&window,thread_id] {
+//            return window.threads_ready[thread_id];
+//        });
+//
+//        std::println("thread {} awoken", thread_id);
+//
+//        RectangleD& draw_rec = window.draw_recs[thread_id];
+//        Vector2D graph_top_left = {draw_rec.x, draw_rec.y};
+//        RectangleD graph_rec_d = {window.graph_rec.x, window.graph_rec.y, window.graph_rec.width, window.graph_rec.height};
+//        to_graph(graph_top_left, graph_rec_d, mandelbrot_rec);
+//
+//        Vector2D graph_point = graph_top_left;
+//
+//        Vector2D unit;
+//        unit.x = mandelbrot_rec.width / graph_rec_d.width; 
+//        unit.y = mandelbrot_rec.height / graph_rec_d.height; 
+//
+//
+//        for (int y = draw_rec.y; y < draw_rec.y + draw_rec.height; ++y) {
+//            graph_point.x = graph_top_left.x;
+//            for (int x = draw_rec.x; x < draw_rec.x + draw_rec.width; ++x) {
+//                int n = in_mandelbrot_set(graph_point, max_iter);
+//                if (n > 0) {
+//                    ImageDrawPixel(&window.graph_image, x, y, window.palette.at(n));
+//                }
+//                graph_point.x += unit.x;
+//            }
+//            graph_point.y -= unit.y;
+//        }
+//        graph_point = graph_top_left;
+//        window.threads_ready[thread_id] = false;
+//        std::println("thread {} ending loop", thread_id);
+//    }
+//}
+//
+//void draw_mandelbrot_image_mpfr(MandelbrotVectors& mandelbrot_vectors, DrawVectors& draw_vectors, const RectangleAP& mandelbrot_rec, Window& window, uint64_t max_iter, uint64_t thread_id) {
+//    // !! Immder die selben draw_recs -> vorberechnen ?
+//    std::unique_lock<std::mutex> lock(mtx);
+//    lock.unlock();
+//    while(threads_running) {
+//        cv.wait(lock, [&window,thread_id] {
+//            return window.threads_ready[thread_id];
+//        });
+//
+//        std::println("thread {} awoken", thread_id);
+//
+//        RectangleD& draw_rec = window.draw_recs[thread_id];
+//        Rectangle& graph_rec = window.graph_rec;
+//        Vector2AP& graph_top_left = draw_vectors.top_left;
+//        mpfr_set_d(graph_top_left.x, draw_rec.x, MPFR_RNDN);
+//        mpfr_set_d(graph_top_left.y, draw_rec.y, MPFR_RNDN);
+//        to_graph(graph_top_left, (RectangleD){graph_rec.x, graph_rec.y, graph_rec.width, graph_rec.height}, mandelbrot_rec);
+//
+//        Vector2AP& graph_point = draw_vectors.graph_point;
+//        mpfr_set(graph_point.x, graph_top_left.x, MPFR_RNDN);
+//        mpfr_set(graph_point.y, graph_top_left.y, MPFR_RNDN);
+//
+//        Vector2AP& unit = draw_vectors.unit;
+//        //unit.x = 1.f / graph_rec.width * mandelbrot_rec.width; 
+//        //unit.y = 1.f / graph_rec.height * mandelbrot_rec.height; 
+//        mpfr_div_d(unit.x, mandelbrot_rec.width, graph_rec.width, MPFR_RNDN);
+//        mpfr_div_d(unit.y, mandelbrot_rec.height, graph_rec.height, MPFR_RNDN);
+//
+//
+//        for (int y = draw_rec.y; y < draw_rec.y + draw_rec.height; ++y) {
+//            mpfr_set(graph_point.x, graph_top_left.x, MPFR_RNDN);
+//            for (int x = draw_rec.x; x < draw_rec.x + draw_rec.width; ++x) {
+//                int n = in_mandelbrot_set(graph_point, mandelbrot_vectors, max_iter);
+//                if (n > 0) {
+//                    lock.lock();
+//                    ImageDrawPixel(&window.graph_image, x, y, window.palette.at(n));
+//                    lock.unlock();
+//                }
+//                mpfr_add(graph_point.x, graph_point.x, unit.x, MPFR_RNDN);
+//            }
+//            mpfr_sub(graph_point.y, graph_point.y, unit.y, MPFR_RNDN);
+//        }
+//        window.threads_ready[thread_id] = false;
+//        std::println("thread {} ending loop", thread_id);
+//    }
+//}
 
 struct App {
     Window window;
@@ -502,25 +538,26 @@ struct App {
 
         float width = window.graph_rec.width / num_threads;
         for (int i = 0; i < num_threads; ++i) {
-            window.draw_recs_d[i] = {i * width, 0.f, width, window.graph_rec.height};
+            window.draw_recs[i] = {i * width, 0.f, width, window.graph_rec.height};
 
-            window.render_jobs.emplace_back(draw_mandelbrot_image_d, std::cref(mandelbrot_rec), std::ref(window), max_iter, i);
+            //window.render_jobs.emplace_back(draw_mandelbrot_image_d, std::cref(mandelbrot_rec), std::ref(window), max_iter, i);
 
-            window.threads_ready.emplace_back(false);
+            //window.threads_ready.emplace_back(false);
         }
+        window.render_thread = std::jthread(render_worker, std::ref(*this));
 
     }
 
     void init_render_threads(uint64_t max_iter, uint64_t num_threads, RectangleAP& mandelbrot_rec, Window& window) {
 
         float width = window.graph_rec.width / num_threads;
-        for (int i = 0; i < num_threads; ++i) {
-            window.draw_recs_d[i] = {i * width, 0.f, width, window.graph_rec.height};
+    //    for (int i = 0; i < num_threads; ++i) {
+    //        window.draw_recs[i] = {i * width, 0.f, width, window.graph_rec.height};
 
-            window.render_jobs.emplace_back(draw_mandelbrot_image_mpfr, std::ref(thread_mandelbrot_vectors[i]), std::ref(thread_draw_vectors[i]), std::cref(mandelbrot_rec), std::ref(window), max_iter, i);
+    //        window.render_jobs.emplace_back(draw_mandelbrot_image_mpfr, std::ref(thread_mandelbrot_vectors[i]), std::ref(thread_draw_vectors[i]), std::cref(mandelbrot_rec), std::ref(window), max_iter, i);
 
-            window.threads_ready.emplace_back(false);
-        }
+    //        window.threads_ready.emplace_back(false);
+    //    }
 
     }
 
@@ -579,25 +616,27 @@ struct App {
             float text_size = 20;
             Vector2 mouse_pos = GetMousePosition();
 
-            if (compute_mode == MPFR) {
-                mpfr_set_d(temp.x, mouse_pos.x, MPFR_RNDN);
-                mpfr_set_d(temp.y, mouse_pos.y, MPFR_RNDN);
-                //Vector2AP mouse_pos_mandelbrot = to_graph(mouse_pos_ap, window.graph_rec, mandelbrot.mandelbrot_rec);
-                RectangleD graph_rec_d = {window.graph_rec.x, window.graph_rec.y, window.graph_rec.width, window.graph_rec.height};
-                to_graph(temp, graph_rec_d, mandelbrot.mandelbrot_rec_mpfr);
+            // PLEASE NO ENABLE - 8GB RAM in 1 SEK
 
-                window.copy_img = ImageCopy(window.graph_image);
+            //if (compute_mode == MPFR) {
+            //    mpfr_set_d(temp.x, mouse_pos.x, MPFR_RNDN);
+            //    mpfr_set_d(temp.y, mouse_pos.y, MPFR_RNDN);
+            //    //Vector2AP mouse_pos_mandelbrot = to_graph(mouse_pos_ap, window.graph_rec, mandelbrot.mandelbrot_rec);
+            //    RectangleD graph_rec_d = {window.graph_rec.x, window.graph_rec.y, window.graph_rec.width, window.graph_rec.height};
+            //    to_graph(temp, graph_rec_d, mandelbrot.mandelbrot_rec_mpfr);
 
-                ImageDrawText(&window.copy_img, TextFormat("%f, %f", mpfr_get_d(temp.x, MPFR_RNDN), mpfr_get_d(temp.y, MPFR_RNDN)), 0, 0, text_size, WHITE);
+            //    window.copy_img = ImageCopy(window.graph_image);
 
-            } else if (compute_mode == DOUBLE) {
-                to_graph(mouse_pos, window.graph_rec, mandelbrot.mandelbrot_rec_d);
-                window.copy_img = ImageCopy(window.graph_image);
-                ImageDrawText(&window.copy_img, TextFormat("%f, %f", mouse_pos.x, mouse_pos.y), 0, 0, text_size, WHITE);
-            }
+            //    ImageDrawText(&window.copy_img, TextFormat("%f, %f", mpfr_get_d(temp.x, MPFR_RNDN), mpfr_get_d(temp.y, MPFR_RNDN)), 0, 0, text_size, WHITE);
 
-            UpdateTexture(window.copy_texture, window.copy_img.data);
-            DrawTexture(window.copy_texture, 0, 0, WHITE);
+            //} else if (compute_mode == DOUBLE) {
+            //    to_graph(mouse_pos, window.graph_rec, mandelbrot.mandelbrot_rec_d);
+            //    window.copy_img = ImageCopy(window.graph_image);
+            //    ImageDrawText(&window.copy_img, TextFormat("%f, %f", mouse_pos.x, mouse_pos.y), 0, 0, text_size, WHITE);
+            //}
+
+            //UpdateTexture(window.copy_texture, window.copy_img.data);
+            //DrawTexture(window.copy_texture, 0, 0, WHITE);
         }
 
     }
@@ -606,14 +645,13 @@ struct App {
         window.begin_frame();
 
         // render new view to graph_image
-        if (new_input) {
-            int i = 0;
-            for (uint64_t& ready : window.threads_ready) {
-                std::lock_guard<std::mutex> lock(mtx);
-                ready = true;
-            }
+        std::jthread a;
 
-            cv.notify_all();
+        if (window.thread_ready && new_input) {
+            std::println("clearing background");
+            ImageDrawRectangleRec(&window.graph_image, window.graph_rec, window.bg_color);
+            
+            cv.notify_one();
             //render_to_img();
             //if (compute_mode == MPFR) {
             //    window.render_to_img(mandelbrot.mandelbrot_rec_mpfr, num_threads, max_iter);
@@ -621,7 +659,7 @@ struct App {
             //} else if (compute_mode == DOUBLE) {
             //    window.render_to_img(mandelbrot.mandelbrot_rec_d, num_threads, max_iter);
             //}
-            new_input = false;
+            //new_input = false;
         }
 
         controls();
@@ -633,15 +671,16 @@ struct App {
     }
 
     void stop_threads() {
-        threads_running = false;
-        for (uint64_t& ready : window.threads_ready) {
-            ready = true;
-        }
-        cv.notify_all();
-        for (std::thread& t : window.render_jobs) {
-            t.join();
-        }
-        
+        //threads_running = false;
+        //for (uint64_t& ready : window.threads_ready) {
+        //    ready = true;
+        //}
+        //cv.notify_all();
+        //for (std::thread& t : window.render_jobs) {
+        //    t.join();
+        //}
+        //
+        window.render_thread.request_stop();
     }
 
     void init_mpfr_containers(uint64_t num_threads) {
@@ -659,6 +698,40 @@ struct App {
 
 };
 
+void render_worker(std::stop_token st, App& app) {
+    std::unique_lock<std::mutex> lock(mtx);
+
+    std::println("render thread started");
+
+    while (!st.stop_requested()) {
+        cv.wait(lock, [&app] {
+            return app.new_input;
+        });
+        if (st.stop_requested()) break;
+        app.window.thread_ready = false;
+        app.new_input = false;
+
+        std::vector<std::jthread> render_threads;
+        std::println("render thread started");
+
+        for (int i = 0; i < app.num_threads; ++i) {
+            render_threads.emplace_back(draw_mandelbrot_image, std::cref(app.mandelbrot.mandelbrot_rec_d), std::ref(app.window), app.max_iter, i);
+        }
+
+        for (auto& t: render_threads) {
+            if (app.new_input) break;
+            t.join();
+        }
+
+        //draw_axis(app.mandelbrot.mandelbrot_rec_d);
+
+        app.window.thread_ready = true;
+
+        std::println("render thread ends");
+
+    } 
+}
+
 Window init_window(int width, int height, const char* title, uint64_t max_iter, uint64_t num_threads, const RectangleD& mandelbrot_rec) {
     Window window;
     window.screen_size = {(float)width, (float)height};
@@ -668,7 +741,7 @@ Window init_window(int width, int height, const char* title, uint64_t max_iter, 
 
     InitWindow(window.screen_size.x, window.screen_size.y, title);
     SetTraceLogLevel(LOG_WARNING);
-    //SetTargetFPS(120);
+    SetTargetFPS(120);
 
     window.graph_image = GenImageColor(window.graph_rec.width, window.graph_rec.height, window.bg_color);
     window.graph_texture = LoadTextureFromImage(window.graph_image);
@@ -676,7 +749,7 @@ Window init_window(int width, int height, const char* title, uint64_t max_iter, 
     window.copy_img = ImageCopy(window.graph_image);
     window.copy_texture = LoadTextureFromImage(window.copy_img);
 
-    window.draw_recs_d.reserve(num_threads);
+    window.draw_recs.reserve(num_threads);
 
     return window;
 }
@@ -686,6 +759,7 @@ Window init_window(int width, int height, const char* title, uint64_t max_iter, 
 App init_app(int width, int height, const char* title, uint64_t num_threads) {
     App app;
 
+    app.compute_mode = DOUBLE;
     app.num_threads = num_threads;
 
     mpfr_set_default_prec(float_precision);
@@ -718,8 +792,9 @@ App init_app(int width, int height, const char* title, uint64_t num_threads) {
 int main() {
 
 
-    uint64_t num_threads = std::thread::hardware_concurrency() - 1;
+    uint64_t num_threads = std::thread::hardware_concurrency() - 2;
     if (num_threads > max_threads) num_threads = max_threads;
+    if (num_threads == 0) num_threads = 1;
 
     App app = init_app(window_width, window_height, "Mandelbrot", num_threads);
 
