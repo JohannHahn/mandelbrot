@@ -645,7 +645,6 @@ struct App {
         window.begin_frame();
 
         // render new view to graph_image
-        std::jthread a;
 
         if (window.thread_ready && new_input) {
             std::println("clearing background");
