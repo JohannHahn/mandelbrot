@@ -1,3 +1,8 @@
+// TODO: die iterationszahl ändern während dem rendering ist nicht safe (speicherzugriff)
+// TODO: MPFR support wieder 
+// TODO: MPFR manual memory management?
+// TODO: UI 
+//
 #include <cstdint>
 #include <raylib.h>
 #include <raymath.h>
@@ -406,8 +411,6 @@ struct Window {
 
 void draw_mandelbrot_image(const RectangleD& mandelbrot_rec, Window& window, uint64_t max_iter, uint64_t thread_id) {
 
-    std::println("render_worker {} start", thread_id);
-
     RectangleD& draw_rec = window.draw_recs[thread_id];
     Vector2D graph_top_left = {draw_rec.x, draw_rec.y};
     RectangleD graph_rec_d = {window.graph_rec.x, window.graph_rec.y, window.graph_rec.width, window.graph_rec.height};
@@ -436,7 +439,6 @@ void draw_mandelbrot_image(const RectangleD& mandelbrot_rec, Window& window, uin
     }
     graph_point = graph_top_left;
 
-    std::println("render_worker {} end", thread_id);
 }
 
 
@@ -618,7 +620,6 @@ struct App {
             max_iter *= 2;
             window.fill_palette(max_iter);
             new_input = true;
-            std::println("max_iter = {}", max_iter);
         }
         if (IsKeyPressed(KEY_L)) {
             if (max_iter == 1) return;
@@ -631,7 +632,6 @@ struct App {
                 window.fill_palette(max_iter);
 
             }
-            std::println("max_iter = {}", max_iter);
             new_input = true;
         }
 
@@ -723,7 +723,6 @@ struct App {
 void render_thread(std::stop_token st, App& app) {
     std::unique_lock<std::mutex> lock(mtx);
 
-    //std::println("main render thread started");
 
     while (!st.stop_requested()) {
         cv.wait(lock, [&app] {
@@ -735,7 +734,6 @@ void render_thread(std::stop_token st, App& app) {
         app.new_input = false;
 
         std::vector<std::jthread> render_workers;
-        //std::println("main render thread awoken");
 
         ImageDrawRectangleRec(&app.window.graph_image, app.window.graph_rec, app.window.bg_color);
 
@@ -756,11 +754,7 @@ void render_thread(std::stop_token st, App& app) {
 
         //draw_axis(app.mandelbrot.mandelbrot_rec_d);
 
-
-        //std::println("main render thread loop end");
-
     } 
-        //std::println("main render thread END / RETURN");
 }
 
 Window init_window(int width, int height, const char* title, uint64_t max_iter, uint64_t num_threads, const RectangleD& mandelbrot_rec) {
